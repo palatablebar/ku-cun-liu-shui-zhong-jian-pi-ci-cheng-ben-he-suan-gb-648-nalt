@@ -34,8 +34,40 @@ def test_layer_value_matches_run_totals(client, demo):
     assert Decimal(payload["layer_totals"]["value"]) == Decimal(expected["ending_value"])
     assert Decimal(payload["layer_totals"]["qty"]) == Decimal(
         expected["quantities"]["ending_qty"])
-    assert payload["layer_totals"]["layers"] == 13
+    assert payload["layer_totals"]["layers"] == 14
     assert all(item["ok"] for item in payload["checks"])
+
+
+def test_provisional_layers_are_flagged_and_valued(client, demo):
+    # 原单晚到的退货建临时层：带 provisional 标记、成本来源与待回原单号
+    payload = cost(client)
+    provisional = {layer["doc_no"]: layer for layer in payload["provisional_layers"]}
+    assert set(provisional) == {"TH-2010", "TH-2026"}
+    th2026 = provisional["TH-2026"]
+    assert Decimal(th2026["unit_cost"]) == Decimal("10.0000")
+    assert th2026["provisional"] == 1
+    assert th2026["cost_source"] == "RETURN_PRICE"
+    assert th2026["ref_doc"] == "XX-9999"
+    normal = [layer for layer in payload["layers"] if not layer.get("provisional")]
+    assert all(layer.get("provisional") in (0, None) for layer in normal)
+
+
+def test_returns_ledger_modes(client, demo):
+    payload = cost(client)
+    ledger = {row["doc_no"]: row for row in payload["returns"]}
+    assert set(ledger) == {"TH-2009", "TH-2010", "TH-2026"}
+    assert ledger["TH-2009"]["return_mode"] == "RESTORED"
+    assert ledger["TH-2009"]["layer_ids"] == "L000001"
+    assert Decimal(ledger["TH-2009"]["booked_value"]) == Decimal("1000")
+    assert ledger["TH-2010"]["return_mode"] == "PROVISIONAL"
+    assert ledger["TH-2026"]["return_mode"] == "PROVISIONAL"
+    assert Decimal(ledger["TH-2026"]["booked_value"]) == Decimal("100")
+    assert ledger["TH-2026"]["provisional_layer"] == "L000014"
+    summary = payload["return_summary"]
+    assert summary["provisional_rows"] == 2
+    assert summary["restored_rows"] == 1
+    assert summary["parked_rows"] == 0
+    assert Decimal(summary["provisional_value"]) == Decimal("195")
 
 
 def test_transfer_layer_unit_cost_from_consumed_layers(client, demo):
@@ -61,8 +93,8 @@ def test_layer_rows_grouped_by_sku_and_warehouse(client, demo):
     payload = cost(client)
     groups = {(row["sku"], row["warehouse"]): row for row in payload["layer_rows"]}
     assert len(groups) == 6
-    assert Decimal(groups[("000123", "WH-A")]["qty"]) == Decimal("511.2")
-    assert Decimal(groups[("000123", "WH-A")]["value"]) == Decimal("5114.4")
+    assert Decimal(groups[("000123", "WH-A")]["qty"]) == Decimal("521.2")
+    assert Decimal(groups[("000123", "WH-A")]["value"]) == Decimal("5214.4")
     assert Decimal(groups[("000999", "WH-C")]["qty"]) == Decimal("2.5")
 
 
@@ -80,3 +112,16 @@ def test_cost_csv_matches_api(client, demo):
     assert len(lines) == len(payload["cogs"]) + 1
     assert "净成本" in lines[0]
     assert any("CK-2002" in line for line in lines)
+
+
+def test_wait_original_policy_parks_returns(client_wait, demo_wait):
+    # wait_original：原单缺失的退货整行隔离，不入在库、不建层
+    payload = client_wait.get("/api/cost").json()
+    ledger = {row["doc_no"]: row for row in payload["returns"]}
+    assert ledger["TH-2010"]["return_mode"] == "PARKED"
+    assert ledger["TH-2026"]["return_mode"] == "PARKED"
+    assert payload["return_summary"]["parked_rows"] == 2
+    assert payload["provisional_layers"] == []
+    assert Decimal(payload["layer_totals"]["qty"]) == Decimal("900.2")
+    assert Decimal(payload["layer_totals"]["value"]) == Decimal("8312.4")
+    assert payload["layer_totals"]["layers"] == 12

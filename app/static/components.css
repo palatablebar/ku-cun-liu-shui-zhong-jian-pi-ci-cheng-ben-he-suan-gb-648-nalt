@@ -107,6 +107,11 @@ table.table {
   border-left: 2px solid var(--warn);
 }
 
+.table tbody tr.is-provisional td {
+  border-left: 2px solid var(--warn);
+  background: rgba(210, 153, 34, 0.08);
+}
+
 .dot {
   display: inline-block;
   width: 6px;

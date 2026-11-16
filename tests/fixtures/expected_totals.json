@@ -1,8 +1,8 @@
 {
   "counts": {
     "raw_rows": 34,
-    "applied": 14,
-    "quarantined": 18,
+    "applied": 15,
+    "quarantined": 17,
     "superseded": 1,
     "duplicate": 1,
     "blank": 0,
@@ -10,18 +10,34 @@
   },
   "quantities": {
     "opening_qty": "182.5000",
-    "in_qty": "1672.2000",
+    "in_qty": "1682.2000",
     "out_qty": "940.0000",
     "adj_in_qty": "0.5000",
     "adj_out_qty": "5.0000",
-    "ending_qty": "910.2000"
+    "ending_qty": "920.2000"
   },
   "cogs": "8520.0000",
-  "ending_value": "8407.4000",
-  "layers": 13,
+  "ending_value": "8507.4000",
+  "layers": 14,
   "segments": 6,
   "counts_rows": 5,
   "adjusted_qty": "909.5000",
-  "count_adjust_value": "-12.0000",
-  "reconcile_ok": true
+  "count_adjust_value": "-112.0000",
+  "reconcile_ok": true,
+  "wait_original": {
+    "counts": {
+      "raw_rows": 34,
+      "applied": 13,
+      "quarantined": 19,
+      "superseded": 1,
+      "duplicate": 1
+    },
+    "quantities": {
+      "in_qty": "1662.2000",
+      "ending_qty": "900.2000"
+    },
+    "ending_value": "8312.4000",
+    "layers": 12,
+    "parked_returns": 2
+  }
 }

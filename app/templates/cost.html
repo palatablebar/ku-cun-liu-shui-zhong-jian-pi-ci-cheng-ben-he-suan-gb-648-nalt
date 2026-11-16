@@ -9,6 +9,44 @@
   <div class="stat"><span class="stat-label">期末数量 kg</span><strong class="stat-value">{{ cost.layer_totals.qty | qty }}</strong></div>
 </section>
 
+<section class="panel">
+  <header class="panel-head">
+    <h2>退货复核台账</h2>
+    <div class="filters">
+      <span class="panel-sub">策略：{{ cost.return_policy | return_policy_label }} · 临时 {{ cost.return_summary.provisional_rows }} 行 / 已回原层 {{ cost.return_summary.restored_rows }} 行 / 待原单 {{ cost.return_summary.parked_rows }} 行</span>
+      <a class="chip" href="/api/export/returns.csv">退货 CSV</a>
+    </div>
+  </header>
+  <div class="table-wrap">
+    <table class="table" data-sortable>
+      <thead>
+        <tr><th class="num">文件行</th><th>退货单号</th><th>仓库</th><th>物料</th><th class="num">退货 kg</th><th>原单号</th><th>入账方式</th><th>成本来源</th><th class="num">入账单价</th><th class="num">入账金额</th><th>层</th><th>库存与成本影响</th></tr>
+      </thead>
+      <tbody>
+        {% for item in cost.returns %}
+        <tr class="{% if item.return_mode == 'PROVISIONAL' %}is-provisional{% elif item.return_mode == 'PARKED' %}is-bad{% endif %}">
+          <td class="num">{{ item.row_no }}</td>
+          <td>{{ item.doc_no }}</td>
+          <td>{{ item.warehouse }}</td>
+          <td>{{ item.sku }}</td>
+          <td class="num">{{ item.qty_kg | qty }}</td>
+          <td>{{ item.ref_doc or '—' }}</td>
+          <td><span class="tag {% if item.return_mode == 'PROVISIONAL' %}tag-warn{% elif item.return_mode == 'PARKED' %}tag-bad{% else %}tag-ok{% endif %}">{{ item.mode_label }}</span>{% if item.reason %}<div class="panel-sub">{{ item.reason }}</div>{% endif %}</td>
+          <td>{{ item.cost_source_label or '—' }}</td>
+          <td class="num">{{ item.unit_cost | money }}</td>
+          <td class="num">{{ item.booked_value | money }}</td>
+          <td class="panel-sub">{{ item.provisional_layer or item.layer_ids or '—' }}</td>
+          <td class="panel-sub">{{ item.impact }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="12" class="hint">没有退货记录。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="notice">临时入账先保当天在库，估算成本只用于临时层；原单补到后整批重放，临时层消失、数量回原批次层，在库数量不变、层成本与出库成本按原批次单价重算。</p>
+</section>
+
 <div class="split">
   <section class="panel">
     <header class="panel-head"><h2>按单据成本</h2><span class="panel-sub">{{ cost.cogs | length }} 张</span></header>

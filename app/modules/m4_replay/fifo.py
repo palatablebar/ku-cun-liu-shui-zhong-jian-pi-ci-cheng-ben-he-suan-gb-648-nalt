@@ -14,7 +14,9 @@ def key_of(sku: str, warehouse: str) -> tuple[str, str]:
 
 
 def new_layer(layers: list[dict], sku: str, warehouse: str, origin: str, doc_no: str,
-              line_no: int, ts: str, unit_cost: Decimal, qty: Decimal) -> dict:
+              line_no: int, ts: str, unit_cost: Decimal, qty: Decimal,
+              provisional: bool = False, cost_source: str = "",
+              ref_doc: str = "") -> dict:
     layer = {
         "layer_id": f"L{len(layers) + 1:06d}",
         "sku": sku,
@@ -26,9 +28,42 @@ def new_layer(layers: list[dict], sku: str, warehouse: str, origin: str, doc_no:
         "unit_cost": config.quantize_cost(unit_cost),
         "qty_in": config.quantize_qty(qty),
         "qty_remaining": config.quantize_qty(qty),
+        # 临时层：退货原单晚到时按估算成本先入在库，原单补到重放后整层消失（回原层）。
+        "provisional": provisional,
+        "cost_source": cost_source,
+        "ref_doc": ref_doc,
     }
     layers.append(layer)
     return layer
+
+
+def latest_layer_cost(bucket: list[dict]) -> Decimal | None:
+    """同物料同仓最新一个还有剩余的层成本，作为退货临时层的估算口径。
+
+    临时层自身不作为后续临时层的估算来源，避免估算成本在退货之间自我复制。
+    """
+    for layer in reversed(bucket):
+        if layer.get("provisional"):
+            continue
+        if config.dec(layer["qty_remaining"]) > 0:
+            return config.dec(layer["unit_cost"])
+    return None
+
+
+def estimate_provisional_cost(row: dict, bucket: list[dict]) -> tuple:
+    """临时层估算成本：退货自带单价 → 同物料同仓最新层成本 → 配置兜底。
+
+    返回 (单价 Decimal, 来源码)；没有任何可用口径时返回 (None, 原因码)。
+    """
+    own_price = config.dec(row.get("price"))
+    if own_price > 0:
+        return own_price, "RETURN_PRICE"
+    reference = latest_layer_cost(bucket)
+    if reference is not None and reference > 0:
+        return reference, "LATEST_LAYER"
+    if config.PROVISIONAL_FALLBACK_COST > 0:
+        return config.PROVISIONAL_FALLBACK_COST, "FALLBACK"
+    return None, "RETURN_NO_COST_BASIS"
 
 
 def on_hand(layers: list[dict]) -> Decimal:

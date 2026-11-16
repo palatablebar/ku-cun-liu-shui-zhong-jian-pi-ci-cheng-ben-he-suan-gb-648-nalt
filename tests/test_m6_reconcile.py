@@ -25,11 +25,15 @@ def body(key: str) -> dict:
 def test_six_books_all_pass(client, demo):
     payload = report(client)
     assert payload["ok"] is True
-    assert len(payload["checks"]) == 10
+    assert len(payload["checks"]) == 11
     assert {item["code"] for item in payload["checks"]} == {
         "rows", "quantity", "layer_qty", "layer_value", "conservation_value",
-        "conservation_qty", "cogs", "transfer", "counts_rows", "counts",
+        "conservation_qty", "cogs", "returns_provisional", "transfer",
+        "counts_rows", "counts",
     }
+    provisional = next(item for item in payload["checks"]
+                       if item["code"] == "returns_provisional")
+    assert provisional["ok"] is True
 
 
 def test_quantity_identity_numbers(client, demo):
@@ -46,12 +50,13 @@ def test_count_rows_and_adjustments(client, demo):
     payload = report(client)
     rows = {row["count_no"] + row["sku"]: row for row in payload["counts"]}
     assert len(payload["counts"]) == 5
-    assert Decimal(rows["PD-C-01000123"]["diff_qty"]) == Decimal("-1.2")
+    # TH-2026 临时层 10kg 已入 WH-A/000123 在库，系统数变大，差异由 -1.2 变为 -11.2
+    assert Decimal(rows["PD-C-01000123"]["diff_qty"]) == Decimal("-11.2")
     assert Decimal(rows["PD-C-01000456"]["diff_qty"]) == Decimal("2.5")
     assert rows["PD-C-02000999"]["status"] == "COUNT_BALANCED"
     assert Decimal(payload["adjust"]["adjust_in_qty"]) == Decimal("2.5")
-    assert Decimal(payload["adjust"]["adjust_out_qty"]) == Decimal("3.2")
-    assert Decimal(payload["adjust"]["adjust_value"]) == Decimal("-12")
+    assert Decimal(payload["adjust"]["adjust_out_qty"]) == Decimal("13.2")
+    assert Decimal(payload["adjust"]["adjust_value"]) == Decimal("-112")
 
 
 def test_reference_cost_for_positive_diff(client, demo):

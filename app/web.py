@@ -47,6 +47,24 @@ DIRECTION_LABELS = {
     "ADJ_OUT": "调整出",
 }
 
+RETURN_MODE_LABELS = {
+    "RESTORED": "已回原层",
+    "PROVISIONAL": "临时入账",
+    "PARKED": "待原单",
+}
+
+RETURN_COST_SOURCE_LABELS = {
+    "RETURN_PRICE": "退货自带单价",
+    "LATEST_LAYER": "最新层成本",
+    "FALLBACK": "兜底单价",
+    "ORIGINAL_LAYER": "原批次层成本",
+}
+
+RETURN_POLICY_LABELS = {
+    "provisional": "临时入账优先（保当天在库）",
+    "wait_original": "等原单回原层（保批次成本）",
+}
+
 LAYER_ORIGINS = {
     "OPEN": "期初",
     "采购入库": "采购",
@@ -131,6 +149,18 @@ def direction_label(value) -> str:
     return DIRECTION_LABELS.get(str(value or ""), str(value or ""))
 
 
+def return_mode_label(value) -> str:
+    return RETURN_MODE_LABELS.get(str(value or ""), str(value or ""))
+
+
+def cost_source_label(value) -> str:
+    return RETURN_COST_SOURCE_LABELS.get(str(value or ""), str(value or ""))
+
+
+def return_policy_label(value) -> str:
+    return RETURN_POLICY_LABELS.get(str(value or ""), str(value or ""))
+
+
 def origin_label(value) -> str:
     return LAYER_ORIGINS.get(str(value or ""), str(value or ""))
 
@@ -164,6 +194,9 @@ def setup(app: FastAPI) -> None:
     templates.env.filters["status_label"] = status_label
     templates.env.filters["direction_label"] = direction_label
     templates.env.filters["origin_label"] = origin_label
+    templates.env.filters["return_mode_label"] = return_mode_label
+    templates.env.filters["cost_source_label"] = cost_source_label
+    templates.env.filters["return_policy_label"] = return_policy_label
     templates.env.filters["mark"] = mark
     templates.env.filters["layervalue"] = layer_value
     templates.env.filters["zerorem"] = is_zero

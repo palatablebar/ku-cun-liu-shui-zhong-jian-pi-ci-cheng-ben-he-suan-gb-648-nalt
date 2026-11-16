@@ -51,17 +51,28 @@ def apply(settings, store, run) -> dict:
     opening_rows = load_opening(settings, run.get("opening_file") or "")
     outcome = replay_rows(settings, rows, opening_rows)
     store.replace_replay(run["run_id"], outcome["layers"], outcome["segments"], rows)
+    totals = outcome["totals"]
     store.update_totals(
         run["run_id"],
         {
-            "opening_qty": outcome["totals"]["opening_qty"],
-            "in_qty": outcome["totals"]["in_qty"],
-            "out_qty": outcome["totals"]["out_qty"],
-            "adj_in_qty": outcome["totals"]["adj_in_qty"],
-            "adj_out_qty": outcome["totals"]["adj_out_qty"],
-            "ending_qty": outcome["totals"]["ending_qty"],
-            "cogs": outcome["totals"]["cogs"],
-            "ending_value": outcome["totals"]["ending_value"],
+            "opening_qty": totals["opening_qty"],
+            "in_qty": totals["in_qty"],
+            "out_qty": totals["out_qty"],
+            "adj_in_qty": totals["adj_in_qty"],
+            "adj_out_qty": totals["adj_out_qty"],
+            "ending_qty": totals["ending_qty"],
+            "cogs": totals["cogs"],
+            "ending_value": totals["ending_value"],
+            "provisional_qty": totals["provisional_qty"],
+            "provisional_value": totals["provisional_value"],
+        },
+    )
+    store.update_return_metrics(
+        run["run_id"],
+        {
+            "provisional_rows": totals["provisional_rows"],
+            "parked_returns": totals["parked_returns"],
+            "restored_returns": totals["restored_returns"],
         },
     )
     return summary(outcome, run["run_id"])
@@ -83,4 +94,11 @@ def summary(outcome: dict, run_id: str) -> dict:
         },
         "cogs": format(totals["cogs"], "f"),
         "ending_value": format(totals["ending_value"], "f"),
+        "returns": {
+            "provisional_rows": totals["provisional_rows"],
+            "provisional_qty": format(totals["provisional_qty"], "f"),
+            "provisional_value": format(totals["provisional_value"], "f"),
+            "restored_returns": totals["restored_returns"],
+            "parked_returns": totals["parked_returns"],
+        },
     }

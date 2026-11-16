@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
@@ -58,8 +59,11 @@ def create_app(settings: config.Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/demo/run")
-    def demo(request: Request) -> dict:
-        return pipeline.run_demo(request.app.state.settings, request.app.state.store)
+    def demo(request: Request, policy: str = "") -> dict:
+        settings = request.app.state.settings
+        if policy and policy in config.RETURN_POLICIES:
+            settings = replace(settings, return_policy=policy)
+        return pipeline.run_demo(settings, request.app.state.store)
 
     @app.get("/api/log")
     def run_log(request: Request) -> dict:

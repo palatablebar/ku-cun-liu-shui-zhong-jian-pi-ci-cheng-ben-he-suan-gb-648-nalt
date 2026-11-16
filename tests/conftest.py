@@ -24,10 +24,21 @@ FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 
 @pytest.fixture()
 def settings(tmp_path):
+    return make_settings(tmp_path)
+
+
+def make_settings(tmp_path, policy: str = "provisional"):
     return config.Settings(
         db_path=str(tmp_path / "stockflow.sqlite"),
         sample_dir=str(SAMPLE_DIR),
+        return_policy=policy,
     )
+
+
+@pytest.fixture()
+def settings_wait(tmp_path):
+    """等原单回原层策略：原单缺失的退货整行隔离，沿用改造前的严格口径。"""
+    return make_settings(tmp_path, policy="wait_original")
 
 
 @pytest.fixture()
@@ -35,6 +46,20 @@ def client(settings):
     app = create_app(settings)
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture()
+def client_wait(settings_wait):
+    app = create_app(settings_wait)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture()
+def demo_wait(client_wait):
+    response = client_wait.post("/api/demo/run")
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 @pytest.fixture()

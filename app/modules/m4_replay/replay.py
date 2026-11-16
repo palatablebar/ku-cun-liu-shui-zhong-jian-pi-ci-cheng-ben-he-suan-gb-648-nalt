@@ -5,7 +5,11 @@
 - 出库超过在手时整行隔离，绝不压成负库存，后续行照常重放；
 - 调拨必须一条出边一条入边、同物料、异仓、数量相等，缺边与不等都整组隔离；
 - 入边层成本 = 出边实际消耗金额 / 数量，量化到四位；
-- 退货带原单号才回原层（按原消耗顺序），无原单按本次单价建新层。
+- 退货原单已到：按原消耗顺序回原层，不建新层，冲减原单出库成本；
+- 退货原单晚到（settings.return_policy）：
+  * provisional（默认）按参考成本建临时层当天入在库，行记 PROVISIONAL、层记 provisional；
+  * wait_original 整行隔离 RETURN_DOC_NOT_FOUND，等原单补到重放再回原层；
+  原单补到后的整批重放天然幂等：临时层不再生成、数量回原层，库存与成本层不重复增加。
 """
 from __future__ import annotations
 
@@ -75,11 +79,48 @@ def opening_layers(opening_rows: list[dict]) -> list[dict]:
     return layers
 
 
+def book_provisional(row: dict, qty: Decimal, by_key: dict, layers: list[dict],
+                     totals: dict, layers_by_id: dict | None = None) -> dict | None:
+    """原单晚到的退货先建临时层入在库；无任何参考成本可估时返回 None（调用方隔离）。"""
+    bucket = by_key.setdefault(fifo.key_of(row["sku"], row["warehouse"]), [])
+    unit_cost, source = fifo.estimate_provisional_cost(row, bucket)
+    if unit_cost is None:
+        row["status"] = "quarantine"
+        row["reason"] = source
+        row["applied_seq"] = 0
+        return None
+    layer = fifo.new_layer(
+        layers, row["sku"], row["warehouse"], "退货入库", row["doc_no"], row["line_no"],
+        row["ts_utc"], unit_cost, qty, provisional=True, cost_source=source,
+        ref_doc=row.get("ref_doc") or "",
+    )
+    bucket.append(layer)
+    if layers_by_id is not None:
+        layers_by_id[layer["layer_id"]] = layer
+    value = qty * config.dec(layer["unit_cost"])
+    # 临时层与普通入库一样进在库数量与建层金额，但单独记账便于复核与导出。
+    totals["in_qty"] += qty
+    totals["in_value"] += value
+    totals["return_qty"] += qty
+    totals["return_value"] += value
+    totals["provisional_qty"] += qty
+    totals["provisional_value"] += value
+    totals["provisional_rows"] += 1
+    row["return_mode"] = "PROVISIONAL"
+    row["cost_source"] = source
+    row["estimated_cost"] = layer["unit_cost"]
+    row["flags"].append("RETURN_PROVISIONAL")
+    return layer
+
+
 def replay(rows: list[dict], opening_rows: list[dict], settings) -> dict:
     """返回层、消耗段、逐行状态与四本账的数量与金额分项。"""
     for row in rows:
         row["flags"] = list(row.get("flags") or [])
         row["applied_seq"] = 0
+        row.setdefault("return_mode", "")
+        row.setdefault("cost_source", "")
+        row.setdefault("estimated_cost", "")
 
     valid = [row for row in rows if row["status"] == "valid"]
     pairs, broken = pair_transfers(
@@ -118,6 +159,11 @@ def replay(rows: list[dict], opening_rows: list[dict], settings) -> dict:
         "adj_out_value": Decimal("0"),
         "return_qty": Decimal("0"),
         "return_value": Decimal("0"),
+        "provisional_qty": Decimal("0"),
+        "provisional_value": Decimal("0"),
+        "provisional_rows": 0,
+        "parked_returns": 0,
+        "restored_returns": 0,
         "trn_in_qty": Decimal("0"),
         "trn_in_value": Decimal("0"),
         "trn_out_qty": Decimal("0"),
@@ -163,49 +209,68 @@ def replay(rows: list[dict], opening_rows: list[dict], settings) -> dict:
         qty = config.dec(row["qty_kg"])
 
         if direction == "IN":
+            is_return = row["doc_type"] == "退货入库"
             ref = row.get("ref_doc") or ""
             if ref:
                 original = consumed_by_doc.get(ref)
                 if not original:
-                    fail(row, "RETURN_DOC_NOT_FOUND")
-                    continue
-                if original[0]["warehouse"] != row["warehouse"]:
-                    fail(row, "RETURN_WAREHOUSE_MISMATCH")
-                    continue
-                plan = fifo.plan_restore(original, returnable, qty)
-                if plan is None:
-                    fail(row, "RETURN_EXCEEDS_ORIGINAL")
-                    continue
-                restored = fifo.apply_restore(plan, layers_by_id, returnable,
-                                              "R", seg_counter)
-                for seg in restored:
-                    seg.update(
-                        {
-                            "out_doc": row["doc_no"],
-                            "out_line": row["line_no"],
-                            "sku": row["sku"],
-                            "warehouse": row["warehouse"],
-                            "kind": "RET",
-                        }
-                    )
-                segments.extend(restored)
-                restored_value = sum((seg["amount"] for seg in restored), Decimal("0"))
-                # 回原层不是新建层：只进数量与退货金额，不进建层金额。
-                totals["in_qty"] += qty
-                totals["return_qty"] += qty
-                totals["return_value"] += restored_value
+                    if is_return and settings.return_policy == "provisional":
+                        if book_provisional(row, qty, by_key, layers, totals, layers_by_id) is None:
+                            continue
+                    else:
+                        fail(row, "RETURN_DOC_NOT_FOUND")
+                        if is_return:
+                            totals["parked_returns"] += 1
+                        continue
+                else:
+                    if original[0]["warehouse"] != row["warehouse"]:
+                        fail(row, "RETURN_WAREHOUSE_MISMATCH")
+                        continue
+                    plan = fifo.plan_restore(original, returnable, qty)
+                    if plan is None:
+                        fail(row, "RETURN_EXCEEDS_ORIGINAL")
+                        continue
+                    restored = fifo.apply_restore(plan, layers_by_id, returnable,
+                                                  "R", seg_counter)
+                    for seg in restored:
+                        seg.update(
+                            {
+                                "out_doc": row["doc_no"],
+                                "out_line": row["line_no"],
+                                "sku": row["sku"],
+                                "warehouse": row["warehouse"],
+                                "kind": "RET",
+                            }
+                        )
+                    segments.extend(restored)
+                    restored_value = sum((seg["amount"] for seg in restored), Decimal("0"))
+                    # 回原层不是新建层：只进数量与退货金额，不进建层金额。
+                    totals["in_qty"] += qty
+                    if is_return:
+                        totals["return_qty"] += qty
+                        totals["return_value"] += restored_value
+                        totals["restored_returns"] += 1
+                        row["return_mode"] = "RESTORED"
+                        row["flags"].append("RETURN_RESTORED")
             else:
-                price = config.dec(row.get("price"))
-                layer = fifo.new_layer(
-                    layers, row["sku"], row["warehouse"], row["doc_type"], row["doc_no"],
-                    row["line_no"], row["ts_utc"], price, qty,
-                )
-                register_layer(layer)
-                totals["in_qty"] += qty
-                totals["in_value"] += qty * config.dec(layer["unit_cost"])
-                if row["doc_type"] == "退货入库":
-                    totals["return_qty"] += qty
-                    totals["return_value"] += qty * config.dec(layer["unit_cost"])
+                if is_return:
+                    # 退货记录没填原单号：临时入账或隔离，由策略决定。
+                    if settings.return_policy == "provisional":
+                        if book_provisional(row, qty, by_key, layers, totals, layers_by_id) is None:
+                            continue
+                    else:
+                        fail(row, "RETURN_DOC_NOT_FOUND")
+                        totals["parked_returns"] += 1
+                        continue
+                else:
+                    price = config.dec(row.get("price"))
+                    layer = fifo.new_layer(
+                        layers, row["sku"], row["warehouse"], row["doc_type"], row["doc_no"],
+                        row["line_no"], row["ts_utc"], price, qty,
+                    )
+                    register_layer(layer)
+                    totals["in_qty"] += qty
+                    totals["in_value"] += qty * config.dec(layer["unit_cost"])
 
         elif direction == "ADJ_IN":
             price = config.dec(row.get("price"))

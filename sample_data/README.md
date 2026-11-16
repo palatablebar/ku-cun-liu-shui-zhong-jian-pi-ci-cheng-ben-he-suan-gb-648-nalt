@@ -9,3 +9,5 @@
 | `movements_truncated.csv` | 末行截断 | 末行无换行且列数不足 |
 | `movements_header_only.csv` | 仅表头 | 没有数据行 |
 | `empty.csv` | 空文件 | 0 字节 |
+| `movements_returns_late_day1.csv` | 退货原单晚到·当天 | TH-7103 指向晚到原单，默认策略下建临时层入在库 |
+| `movements_returns_late_day2.csv` | 退货原单晚到·原单补到 | TH-7103 改指真实原单，重放后临时层消失、回原批次层 |

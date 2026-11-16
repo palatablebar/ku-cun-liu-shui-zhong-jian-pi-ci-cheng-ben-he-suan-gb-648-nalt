@@ -114,6 +114,15 @@ def describe(settings) -> dict:
             "counts": list(config.COUNT_ALIASES),
         },
         "sentinels": list(settings.sentinels),
+        "return_policies": [
+            {
+                "code": code,
+                "label": "临时入账优先（保当天在库）"
+                if code == "provisional" else "等原单回原层（保批次成本）",
+            }
+            for code in config.RETURN_POLICIES
+        ],
+        "return_policy": settings.return_policy,
         "samples": [
             "movements_dirty.csv",
             "movements_clean.csv",

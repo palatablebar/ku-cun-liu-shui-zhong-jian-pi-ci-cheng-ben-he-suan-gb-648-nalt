@@ -112,6 +112,13 @@ def run_chain(settings: Settings, store, movements=None, opening=None,
         f"出库超在手 {sum(1 for row in rows if row['reason'] == 'OUT_EXCEEDS_STOCK')}"
         f" 调拨问题 {sum(1 for row in rows if row['reason'] in TRANSFER_REASONS)}",
     )
+    note(
+        "WARN" if totals["parked_returns"] else "INFO",
+        "重放",
+        f"退货策略 {settings.return_policy}：临时入账 {totals['provisional_rows']} 行"
+        f" / {_fmt(totals['provisional_qty'])} kg，已回原层 "
+        f"{totals['restored_returns']} 行，待原单未入账 {totals['parked_returns']} 行",
+    )
 
     parsed_counts, counts_bytes = _load(
         settings, count_name, count_raw, contract.aliases("counts"))
@@ -160,6 +167,12 @@ def run_chain(settings: Settings, store, movements=None, opening=None,
         "ending_qty": totals["ending_qty"],
         "cogs": totals["cogs"],
         "ending_value": totals["ending_value"],
+        "return_policy": settings.return_policy,
+        "provisional_qty": totals["provisional_qty"],
+        "provisional_value": totals["provisional_value"],
+        "provisional_rows": totals["provisional_rows"],
+        "parked_returns": totals["parked_returns"],
+        "restored_returns": totals["restored_returns"],
         "status": "ready" if applied else "empty",
         "duration_ms": 0,
     }
@@ -180,10 +193,10 @@ def run_chain(settings: Settings, store, movements=None, opening=None,
     note("INFO", "完成", f"运行 {run['run_id']} 用时 {run['duration_ms']} ms")
 
     store.save_run(run, rows, outcome["layers"], outcome["segments"], count_records, log)
-    return summary(run, rows, outcome, count_records, report)
+    return summary(settings, run, rows, outcome, count_records, report)
 
 
-def summary(run: dict, rows: list[dict], outcome: dict,
+def summary(settings: Settings, run: dict, rows: list[dict], outcome: dict,
             count_records: list[dict], report: dict) -> dict:
     totals = outcome["totals"]
     return {
@@ -213,6 +226,14 @@ def summary(run: dict, rows: list[dict], outcome: dict,
         "checks": report["checks"],
         "quarantine": reasons.distribution(
             [row for row in rows if row["status"] == "quarantine"]),
+        "returns": {
+            "policy": settings.return_policy,
+            "provisional_rows": outcome["totals"]["provisional_rows"],
+            "provisional_qty": format(outcome["totals"]["provisional_qty"], "f"),
+            "provisional_value": format(outcome["totals"]["provisional_value"], "f"),
+            "restored_returns": outcome["totals"]["restored_returns"],
+            "parked_returns": outcome["totals"]["parked_returns"],
+        },
         "movements_sha256": run["movements_sha256"],
         "opening_sha256": run["opening_sha256"],
         "counts_sha256": run["counts_sha256"],

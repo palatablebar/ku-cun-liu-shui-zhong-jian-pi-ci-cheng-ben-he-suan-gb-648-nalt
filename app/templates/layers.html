@@ -61,14 +61,14 @@
       </thead>
       <tbody>
         {% for layer in layers %}
-        <tr class="{% if layer | zerorem %}is-warn{% endif %}">
+        <tr class="{% if layer | zerorem %}is-warn{% endif %}{% if layer.provisional %} is-provisional{% endif %}">
           <td>{{ layer.layer_id }}</td>
           <td>{{ layer.sku }}</td>
           <td>{{ layer.warehouse }}</td>
-          <td>{{ layer.origin | origin_label }}</td>
+          <td>{{ layer.origin | origin_label }}{% if layer.provisional %} <span class="tag tag-warn" title="{{ layer.cost_source | cost_source_label }} · 待回原单 {{ layer.ref_doc or '（未填）' }}">临时</span>{% endif %}</td>
           <td>{{ layer.doc_no or '—' }}</td>
           <td>{{ layer.created_ts | localdt }}</td>
-          <td class="num">{{ layer.unit_cost | money }}</td>
+          <td class="num">{{ layer.unit_cost | money }}{% if layer.provisional %}<span class="panel-sub">（{{ layer.cost_source | cost_source_label }}）</span>{% endif %}</td>
           <td class="num">{{ layer.qty_in | qty }}</td>
           <td class="num">{{ layer.qty_remaining | qty }}</td>
           <td class="num">{{ layer | layervalue }}</td>

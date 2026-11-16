@@ -40,7 +40,6 @@ def test_replay_totals_match_expected(settings):
     assert len(outcome["layers"]) == EXPECTED["layers"]
     assert format(outcome["layers"][0]["qty_remaining"], "f") == "100.0000"
 
-
 def test_replay_totals_survive_input_permutation(settings):
     # TRAP-13：文件乱序不影响重放，全序按发生时间排
     baseline = replay_sample(settings)
@@ -114,15 +113,46 @@ def test_return_with_original_restores_layer(settings):
     assert restored[0]["qty"] == Decimal("100")
     assert layer(outcome, "L000001")["qty_remaining"] == Decimal("100.0000")
     assert restored[0]["amount"] == Decimal("1000")
-    assert outcome["totals"]["return_value"] == Decimal("1095")
+    # TH-2009 回原层 1000，TH-2010/TH-2026 临时层按各自单价 95 + 100
+    assert outcome["totals"]["return_value"] == Decimal("1195")
+    restored_rows = [row for row in outcome["rows"] if row.get("return_mode") == "RESTORED"]
+    assert [row["doc_no"] for row in restored_rows] == ["TH-2009"]
 
 
 def test_return_without_original_creates_new_layer(settings):
     outcome = replay_sample(settings)
+    # TH-2010 无原单：provisional 策略下建临时层，带临时标记与成本来源
     new_layer = layer(outcome, "L000009")
     assert new_layer["origin"] == "退货入库"
     assert new_layer["unit_cost"] == Decimal("9.5000")
     assert new_layer["qty_in"] == Decimal("10.0000")
+    assert new_layer["provisional"] is True
+    assert new_layer["cost_source"] == "RETURN_PRICE"
+    th2010 = [row for row in outcome["rows"] if row["doc_no"] == "TH-2010"][0]
+    assert th2010["return_mode"] == "PROVISIONAL"
+    assert th2010["status"] == "valid"
+
+
+def test_return_without_original_wait_policy_parks(settings_wait):
+    # wait_original：无原单的退货不建层、不入在库，整行隔离
+    from pathlib import Path
+
+    from app.modules.m1_ingest import service as m1_service
+    from app.modules.m2_doc_rules import contract
+    from app.modules.m3_quality import service as m3_service
+
+    raw = Path(settings_wait.sample_dir, "movements_dirty.csv").read_bytes()
+    parsed = m1_service.read_file(
+        settings_wait, "movements_dirty.csv", raw,
+        contract.aliases("movements"))
+    built = m3_service.build(settings_wait, parsed)
+    outcome = replay_mod.replay(built["rows"], opening_rows(settings_wait), settings_wait)
+    assert len(outcome["layers"]) == 12
+    parked = {row["doc_no"]: row for row in outcome["rows"]
+              if row.get("reason") == "RETURN_DOC_NOT_FOUND"}
+    assert set(parked) == {"TH-2010", "TH-2026"}
+    assert outcome["totals"]["parked_returns"] == 2
+    assert outcome["totals"]["provisional_rows"] == 0
 
 
 def test_return_edge_cases(settings):
@@ -130,5 +160,60 @@ def test_return_edge_cases(settings):
     status = {row["doc_no"]: (row["status"], row["reason"]) for row in rows}
     assert status["TH-5403"] == ("valid", "")
     assert status["TH-5404"] == ("quarantine", "RETURN_EXCEEDS_ORIGINAL")
+    # TH-5405 原单不存在：provisional 策略按自带单价建临时层入在库
+    assert status["TH-5405"] == ("valid", "")
+    provisional = [item for item in outcome["layers"] if item.get("provisional")]
+    assert len(provisional) == 1
+    assert provisional[0]["qty_remaining"] == Decimal("5.0000")
+    assert provisional[0]["ref_doc"] == "XX-0000"
+    th5405 = [row for row in rows if row["doc_no"] == "TH-5405"][0]
+    assert th5405["return_mode"] == "PROVISIONAL"
+    assert layer(outcome, "L000001")["qty_remaining"] == Decimal("80.0000")
+
+
+def test_return_edge_cases_wait_policy(settings_wait):
+    outcome, rows = run_fixture(settings_wait, "return_cases.csv")
+    status = {row["doc_no"]: (row["status"], row["reason"]) for row in rows}
+    assert status["TH-5403"] == ("valid", "")
+    assert status["TH-5404"] == ("quarantine", "RETURN_EXCEEDS_ORIGINAL")
     assert status["TH-5405"] == ("quarantine", "RETURN_DOC_NOT_FOUND")
     assert layer(outcome, "L000001")["qty_remaining"] == Decimal("80.0000")
+    assert all(not item.get("provisional") for item in outcome["layers"])
+
+
+def test_provisional_without_any_cost_basis_is_quarantined(settings):
+    # 无自带单价、同物料同仓也没有可参考层、兜底单价为 0：无法估算，隔离而非建零成本层
+    from app import config as config_mod
+
+    original = config_mod.PROVISIONAL_FALLBACK_COST
+    config_mod.PROVISIONAL_FALLBACK_COST = Decimal("0")
+    try:
+        outcome, rows = run_fixture(settings, "return_no_cost.csv")
+    finally:
+        config_mod.PROVISIONAL_FALLBACK_COST = original
+    only = rows[0]
+    assert only["status"] == "quarantine"
+    assert only["reason"] == "RETURN_NO_COST_BASIS"
+    assert all(not item.get("provisional") for item in outcome["layers"])
+    assert outcome["totals"]["provisional_rows"] == 0
+
+
+def test_provisional_cost_falls_back_to_latest_layer(settings):
+    # 退货没填单价时，取同物料同仓最新非临时层成本，而不是零成本
+    text = (
+        "单据号,行号,类型,仓库,物料编码,数量,单位,单价,发生时间,方向,关联单号,版本\n"
+        "RK-8201,1,采购入库,WH-B,000123,20,kg,12.5000,2026-08-02T09:00:00+08:00,入,,1\n"
+        "TH-8202,1,退货入库,WH-B,000123,4,kg,,2026-08-02T10:00:00+08:00,入,CK-8888,1\n"
+    )
+    parsed = m1_service.read_file(
+        settings, "inline.csv", text.encode("utf-8"),
+        contract.aliases("movements"))
+    built = m3_service.build(settings, parsed)
+    outcome = replay_mod.replay(built["rows"], [], settings)
+    th = [row for row in outcome["rows"] if row["doc_no"] == "TH-8202"][0]
+    assert th["return_mode"] == "PROVISIONAL"
+    assert th["cost_source"] == "LATEST_LAYER"
+    assert th["estimated_cost"] == Decimal("12.5000")
+    provisional = [item for item in outcome["layers"] if item.get("provisional")]
+    assert len(provisional) == 1
+    assert provisional[0]["unit_cost"] == Decimal("12.5000")

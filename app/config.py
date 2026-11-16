@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
-RULE_VERSION = "2026.11.1"
+RULE_VERSION = "2026.11.2"
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 
@@ -44,6 +44,16 @@ UNIT_FACTORS = {
     "g": Decimal("0.001"),
     "克": Decimal("0.001"),
 }
+
+# 退货原单晚到的处理策略（进入 run_id，同输入换策略会生成不同批次）：
+# - provisional：退货记录先到时按参考成本建临时层当天入在库，原单补到后重放回原层；
+# - wait_original：原单缺失就整行隔离，等原单补到再入账（数量严格、当天不在库）。
+RETURN_POLICIES = ("provisional", "wait_original")
+DEFAULT_RETURN_POLICY = "provisional"
+
+# 临时层估算成本的取值顺序：退货自带单价优先，否则取同物料同仓最新层成本，
+# 再没有可参考层时按此兜底单价；兜底仍不可用则隔离（RETURN_NO_COST_BASIS）。
+PROVISIONAL_FALLBACK_COST = Decimal("0.0000")
 
 # 单据类型：方向与单价义务。
 # dir: IN/OUT/RET/ADJ/TRN；price: required / ignored / optional / conditional（仅调整入需要）
@@ -149,10 +159,14 @@ class Settings:
     qty_quantum: Decimal = QTY_QUANTUM
     cost_quantum: Decimal = COST_QUANTUM
     value_quantum: Decimal = VALUE_QUANTUM
+    return_policy: str = DEFAULT_RETURN_POLICY
     autoseed: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
+        policy = os.environ.get("RETURN_POLICY", DEFAULT_RETURN_POLICY)
+        if policy not in RETURN_POLICIES:
+            policy = DEFAULT_RETURN_POLICY
         return cls(
             db_path=os.environ.get(
                 "STOCKFLOW_DB", str(PROJECT_DIR / "var" / "stockflow.sqlite")
@@ -160,6 +174,7 @@ class Settings:
             rule_version=os.environ.get("RULE_VERSION", RULE_VERSION),
             sample_dir=os.environ.get("SAMPLE_DIR", str(PROJECT_DIR / "sample_data")),
             tz_name=os.environ.get("TZ", "Asia/Shanghai"),
+            return_policy=policy,
             autoseed=os.environ.get("STOCKFLOW_AUTOSEED", "0") == "1",
         )
 
@@ -170,4 +185,5 @@ class Settings:
             "value_quantum": format(self.value_quantum.normalize(), "f"),
             "timezone": self.tz_name,
             "registry": registry_digest(),
+            "return_policy": self.return_policy,
         }

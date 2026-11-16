@@ -25,6 +25,14 @@
     <span class="stat-label">FIFO 层</span>
     <strong class="stat-value">{{ cost.layer_totals.layers if cost.layer_totals else 0 }}</strong>
   </div>
+  <div class="stat">
+    <span class="stat-label">退货临时入账</span>
+    <strong class="stat-value" title="原单晚到先入在库，原单补到重放回原层">{{ (run.provisional_rows if run else 0) }} 行</strong>
+  </div>
+  <div class="stat">
+    <span class="stat-label">待原单 / 已回原层</span>
+    <strong class="stat-value">{{ (run.parked_returns if run else 0) }} / {{ (run.restored_returns if run else 0) }}</strong>
+  </div>
 </section>
 
 <div class="split">

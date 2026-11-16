@@ -43,6 +43,10 @@ REASONS = {
     "RETURN_DOC_NOT_FOUND": ("退货原单未找到", "重放"),
     "RETURN_WAREHOUSE_MISMATCH": ("退货仓库与原单不符", "重放"),
     "RETURN_EXCEEDS_ORIGINAL": ("退货超过原单消耗", "重放"),
+    "RETURN_NO_COST_BASIS": ("退货无参考成本可估", "重放"),
+    "RETURN_PROVISIONAL": ("退货临时入账待原单", "重放"),
+    "RETURN_RESTORED": ("退货已回原批次层", "重放"),
+    "RETURN_PARKED": ("退货待原单未入账", "重放"),
     "COUNT_DIFF": ("盘点差异", "对账"),
     "COUNT_BALANCED": ("盘点相符", "对账"),
 }
@@ -78,6 +82,7 @@ PRIORITY = (
     "RETURN_DOC_NOT_FOUND",
     "RETURN_WAREHOUSE_MISMATCH",
     "RETURN_EXCEEDS_ORIGINAL",
+    "RETURN_NO_COST_BASIS",
     "DUP_DOC_CONFLICT",
 )
 

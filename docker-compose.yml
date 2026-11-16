@@ -5,6 +5,8 @@ services:
     environment:
       STOCKFLOW_DB: /data/stockflow.sqlite
       STOCKFLOW_AUTOSEED: "1"
+      # 退货原单晚到策略：provisional（默认，临时入账保在库）/ wait_original（隔离等原单）
+      RETURN_POLICY: provisional
       TZ: Asia/Shanghai
     ports:
       - "18207:8000"

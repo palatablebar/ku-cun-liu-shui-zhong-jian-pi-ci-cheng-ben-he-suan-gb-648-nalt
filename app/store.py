@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS runs (
     ending_qty TEXT NOT NULL DEFAULT '0',
     cogs TEXT NOT NULL DEFAULT '0',
     ending_value TEXT NOT NULL DEFAULT '0',
+    return_policy TEXT NOT NULL DEFAULT 'provisional',
+    provisional_qty TEXT NOT NULL DEFAULT '0',
+    provisional_value TEXT NOT NULL DEFAULT '0',
+    provisional_rows INTEGER NOT NULL DEFAULT 0,
+    parked_returns INTEGER NOT NULL DEFAULT 0,
+    restored_returns INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'pending',
     duration_ms INTEGER NOT NULL DEFAULT 0
 );
@@ -82,7 +88,10 @@ CREATE TABLE IF NOT EXISTS movements (
     raw_unit TEXT NOT NULL DEFAULT '',
     raw_cost TEXT NOT NULL DEFAULT '',
     raw_ts TEXT NOT NULL DEFAULT '',
-    applied_seq INTEGER NOT NULL DEFAULT 0
+    applied_seq INTEGER NOT NULL DEFAULT 0,
+    return_mode TEXT NOT NULL DEFAULT '',
+    cost_source TEXT NOT NULL DEFAULT '',
+    estimated_cost TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_movements_run ON movements(run_id, status, seq);
 CREATE TABLE IF NOT EXISTS layers (
@@ -96,7 +105,10 @@ CREATE TABLE IF NOT EXISTS layers (
     created_ts TEXT NOT NULL DEFAULT '',
     unit_cost TEXT NOT NULL DEFAULT '',
     qty_in TEXT NOT NULL DEFAULT '',
-    qty_remaining TEXT NOT NULL DEFAULT ''
+    qty_remaining TEXT NOT NULL DEFAULT '',
+    provisional INTEGER NOT NULL DEFAULT 0,
+    cost_source TEXT NOT NULL DEFAULT '',
+    ref_doc TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_layers_run ON layers(run_id, sku, warehouse);
 CREATE TABLE IF NOT EXISTS consumptions (
@@ -149,7 +161,25 @@ RUN_COLUMNS = (
     "opening_sha256", "counts_sha256", "movements_file", "opening_file", "counts_file",
     "movements_bytes", "opening_bytes", "counts_bytes", "raw_rows", "applied", "quarantined",
     "superseded", "duplicate", "blank", "segments", "opening_qty", "in_qty", "out_qty",
-    "adj_in_qty", "adj_out_qty", "ending_qty", "cogs", "ending_value", "status", "duration_ms",
+    "adj_in_qty", "adj_out_qty", "ending_qty", "cogs", "ending_value",
+    "return_policy", "provisional_qty", "provisional_value", "provisional_rows",
+    "parked_returns", "restored_returns", "status", "duration_ms",
+)
+
+# 老版本库升级：列已存在时 ALTER 会报错，逐列兜底，保证不丢已有批次。
+_MIGRATIONS = (
+    ("runs", "return_policy", "TEXT NOT NULL DEFAULT 'provisional'"),
+    ("runs", "provisional_qty", "TEXT NOT NULL DEFAULT '0'"),
+    ("runs", "provisional_value", "TEXT NOT NULL DEFAULT '0'"),
+    ("runs", "provisional_rows", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "parked_returns", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "restored_returns", "INTEGER NOT NULL DEFAULT 0"),
+    ("movements", "return_mode", "TEXT NOT NULL DEFAULT ''"),
+    ("movements", "cost_source", "TEXT NOT NULL DEFAULT ''"),
+    ("movements", "estimated_cost", "TEXT NOT NULL DEFAULT ''"),
+    ("layers", "provisional", "INTEGER NOT NULL DEFAULT 0"),
+    ("layers", "cost_source", "TEXT NOT NULL DEFAULT ''"),
+    ("layers", "ref_doc", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -175,6 +205,14 @@ class Store:
     def init(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            existing = {
+                (table, row["name"])
+                for table in ("runs", "movements", "layers")
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for table, column, decl in _MIGRATIONS:
+                if (table, column) not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     # ---------- 批次 ----------
     @staticmethod
@@ -213,15 +251,17 @@ class Store:
                 VALUES ({", ".join("?" for _ in RUN_COLUMNS)})""",
                 tuple([run_id, run["created_at"], run["rule_version"], params_json]
                       + [_bind(run.get(
-                          column, "" if column.endswith(("sha256", "file")) else 0))
+                          column,
+                          "" if column.endswith(("sha256", "file"))
+                          or column in ("status", "return_policy") else 0))
                          for column in RUN_COLUMNS[4:]]),
             )
             conn.executemany(
                 """INSERT INTO movements (run_id, seq, row_no, doc_no, line_no, doc_type,
                     warehouse, sku, qty, unit, unit_factor, qty_kg, price, ts_utc, direction,
                     ref_doc, revision, status, reason, flags_json, raw_json, raw_qty, raw_unit,
-                    raw_cost, raw_ts, applied_seq)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    raw_cost, raw_ts, applied_seq, return_mode, cost_source, estimated_cost)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         run_id, row.get("seq", 0), row.get("row_no", 0),
@@ -239,20 +279,25 @@ class Store:
                         row.get("raw_qty", ""), row.get("raw_unit", ""),
                         row.get("raw_cost", ""), row.get("raw_ts", ""),
                         int(row.get("applied_seq") or 0),
+                        row.get("return_mode", ""), row.get("cost_source", ""),
+                        str(row.get("estimated_cost") or ""),
                     )
                     for row in movements
                 ],
             )
             conn.executemany(
                 """INSERT INTO layers (run_id, layer_id, sku, warehouse, origin, doc_no,
-                    line_no, created_ts, unit_cost, qty_in, qty_remaining)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    line_no, created_ts, unit_cost, qty_in, qty_remaining, provisional,
+                    cost_source, ref_doc)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         run_id, layer["layer_id"], layer["sku"], layer["warehouse"],
                         layer["origin"], layer.get("doc_no", ""), layer.get("line_no", 0),
                         layer.get("created_ts", ""), str(layer["unit_cost"]),
                         str(layer["qty_in"]), str(layer["qty_remaining"]),
+                        1 if layer.get("provisional") else 0,
+                        layer.get("cost_source", ""), layer.get("ref_doc", ""),
                     )
                     for layer in layers
                 ],
@@ -321,6 +366,17 @@ class Store:
         with self._conn() as conn:
             conn.execute("UPDATE runs SET status = ? WHERE run_id = ?", (status, run_id))
 
+    def update_return_metrics(self, run_id: str, metrics: dict) -> None:
+        """M4 重跑后同步退货分项计数，保证批次表与重放结果一致。"""
+        keys = ("provisional_rows", "parked_returns", "restored_returns")
+        assignments = ", ".join(f"{key} = ?" for key in keys if key in metrics)
+        values = [int(metrics[key]) for key in keys if key in metrics]
+        if not assignments:
+            return
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE runs SET {assignments} WHERE run_id = ?", (*values, run_id))
+
     def update_totals(self, run_id: str, totals: dict) -> None:
         keys = ("opening_qty", "in_qty", "out_qty", "adj_in_qty", "adj_out_qty",
                 "ending_qty", "cogs", "ending_value")
@@ -388,20 +444,23 @@ class Store:
 
     def replace_replay(self, run_id: str, layers: list[dict],
                        consumptions: list[dict], movements: list[dict]) -> None:
-        """M4 单独重跑：只替换本批的层、消耗段与行状态。"""
+        """M4 单独重跑：只替换本批的层、消耗段与行状态，整事务失败整体回滚。"""
         with self._conn() as conn:
             conn.execute("DELETE FROM layers WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM consumptions WHERE run_id = ?", (run_id,))
             conn.executemany(
                 """INSERT INTO layers (run_id, layer_id, sku, warehouse, origin, doc_no,
-                    line_no, created_ts, unit_cost, qty_in, qty_remaining)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    line_no, created_ts, unit_cost, qty_in, qty_remaining, provisional,
+                    cost_source, ref_doc)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         run_id, layer["layer_id"], layer["sku"], layer["warehouse"],
                         layer["origin"], layer.get("doc_no", ""), layer.get("line_no", 0),
                         layer.get("created_ts", ""), str(layer["unit_cost"]),
                         str(layer["qty_in"]), str(layer["qty_remaining"]),
+                        1 if layer.get("provisional") else 0,
+                        layer.get("cost_source", ""), layer.get("ref_doc", ""),
                     )
                     for layer in layers
                 ],
@@ -423,13 +482,41 @@ class Store:
             for row in movements:
                 conn.execute(
                     "UPDATE movements SET status = ?, reason = ?, flags_json = ?,"
-                    " applied_seq = ? WHERE run_id = ? AND seq = ?",
+                    " applied_seq = ?, return_mode = ?, cost_source = ?,"
+                    " estimated_cost = ? WHERE run_id = ? AND seq = ?",
                     (
                         row.get("status", "valid"), row.get("reason", ""),
                         json.dumps(row.get("flags", []), ensure_ascii=False),
-                        int(row.get("applied_seq") or 0), run_id, row.get("seq", 0),
+                        int(row.get("applied_seq") or 0),
+                        row.get("return_mode", ""), row.get("cost_source", ""),
+                        str(row.get("estimated_cost") or ""),
+                        run_id, row.get("seq", 0),
                     ),
                 )
+
+    def return_rows(self, run_id: str) -> list[dict]:
+        """退货台账：只看退货入库行，含临时入账 / 已回原层 / 待原单三种状态。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM movements WHERE run_id = ? AND doc_type = '退货入库'"
+                " ORDER BY ts_utc, doc_no, line_no",
+                (run_id,),
+            ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["flags"] = json.loads(item.pop("flags_json") or "[]")
+            item["raw"] = json.loads(item.pop("raw_json") or "[]")
+            out.append(item)
+        return out
+
+    def provisional_layers(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM layers WHERE run_id = ? AND provisional = 1 ORDER BY layer_id",
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ---------- 盘点版本水位 ----------
     def count_state(self, count_no: str) -> dict | None:

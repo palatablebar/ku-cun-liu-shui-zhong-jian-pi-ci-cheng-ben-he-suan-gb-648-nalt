@@ -32,11 +32,12 @@
           <th>单位</th>
           <th class="num" data-sort="num">单价</th>
           <th>发生时间</th>
+          <th>退货方式</th>
         </tr>
       </thead>
       <tbody>
         {% for row in rows %}
-        <tr class="{% if row.status == 'quarantine' %}is-bad{% elif row.status in ('superseded', 'duplicate') %}is-warn{% endif %}">
+        <tr class="{% if row.status == 'quarantine' %}is-bad{% elif row.status in ('superseded', 'duplicate') %}is-warn{% endif %}{% if row.return_mode == 'PROVISIONAL' %} is-provisional{% endif %}">
           <td class="num">{{ row.row_no }}</td>
           <td><span class="dot dot-{{ row.status }}"></span>{{ row.status | status_label }}</td>
           <td title="{{ row.reason | reason_label }}">{{ row.reason }}</td>
@@ -51,9 +52,10 @@
           <td>{{ row.unit }}</td>
           <td class="num">{{ row.price | money }}</td>
           <td>{{ row.ts_utc | localdt }}</td>
+          <td>{% if row.return_mode %}<span class="tag {% if row.return_mode == 'PROVISIONAL' %}tag-warn{% elif row.return_mode == 'PARKED' %}tag-bad{% else %}tag-ok{% endif %}">{{ row.return_mode | return_mode_label }}</span>{% else %}—{% endif %}</td>
         </tr>
         {% else %}
-        <tr><td colspan="14" class="hint">没有流水行。</td></tr>
+        <tr><td colspan="15" class="hint">没有流水行。</td></tr>
         {% endfor %}
       </tbody>
     </table>

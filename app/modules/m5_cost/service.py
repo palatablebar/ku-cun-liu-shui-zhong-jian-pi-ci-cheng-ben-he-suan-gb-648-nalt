@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from ... import config
-from . import cogs, layers as layers_mod
+from . import cogs, layers as layers_mod, returns as returns_mod
 
 
 def payload(store, run) -> dict:
     if not run:
         return {"run_id": None, "layers": [], "layer_rows": [], "layer_totals": {},
-                "cogs": [], "cogs_totals": {}, "kinds": [], "checks": []}
+                "cogs": [], "cogs_totals": {}, "kinds": [], "checks": [],
+                "returns": [], "return_summary": {}, "provisional_layers": []}
     raw_layers = store.layers(run["run_id"])
     segments = store.consumptions(run["run_id"])
     layer_totals = layers_mod.totals(raw_layers)
@@ -36,6 +37,9 @@ def payload(store, run) -> dict:
             "ok": _same(run["cogs"], cogs_totals["net"]),
         },
     ]
+    ledger = returns_mod.build_ledger(
+        store.movements(run["run_id"]), raw_layers, segments)
+    provisional_layers = [layer for layer in raw_layers if layer.get("provisional")]
     return {
         "run_id": run["run_id"],
         "layers": raw_layers,
@@ -45,6 +49,10 @@ def payload(store, run) -> dict:
         "cogs_totals": cogs_totals,
         "kinds": cogs.by_kind(segments),
         "checks": checks,
+        "returns": ledger,
+        "return_summary": returns_mod.summarize(ledger),
+        "provisional_layers": provisional_layers,
+        "return_policy": run.get("return_policy", "provisional"),
     }
 
 

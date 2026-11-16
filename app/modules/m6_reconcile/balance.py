@@ -74,6 +74,17 @@ def reconcile(run: dict, movements: list[dict], layers: list[dict],
     count_value = sum((_dec(item["adjust_value"]) for item in count_rows), Decimal("0"))
     short_rows = [item for item in counts if item.get("status") == "COUNT_SHORT"]
 
+    provisional_layers = [layer for layer in layers if layer.get("provisional")]
+    provisional_qty = sum((_dec(layer["qty_remaining"]) for layer in provisional_layers),
+                          Decimal("0"))
+    provisional_value = sum((_dec(layer["qty_remaining"]) * _dec(layer["unit_cost"])
+                             for layer in provisional_layers), Decimal("0"))
+    parked_return_rows = [
+        row for row in quarantined
+        if row.get("doc_type") == "退货入库"
+        and row.get("reason") in ("RETURN_DOC_NOT_FOUND", "RETURN_NO_COST_BASIS")
+    ]
+
     if adjusted_qty is None:
         adjusted_qty = ending_qty + count_adjust
 
@@ -114,6 +125,14 @@ def reconcile(run: dict, movements: list[dict], layers: list[dict],
             "出库成本 = 消耗金额 − 退货恢复金额",
             consumed_value - restored_value,
             run["cogs"],
+        ),
+        _check(
+            "returns_provisional",
+            "临时层金额 = 批次表临时入账金额",
+            _dec(run.get("provisional_value", "0")),
+            provisional_value,
+            f"临时层 {len(provisional_layers)} 个 / {_qq(provisional_qty)} kg"
+            f" / 待原单隔离 {len(parked_return_rows)} 行",
         ),
         _check(
             "transfer",

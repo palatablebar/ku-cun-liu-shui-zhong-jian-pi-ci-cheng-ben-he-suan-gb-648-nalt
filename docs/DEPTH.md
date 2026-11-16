@@ -1,7 +1,7 @@
 # 深度登记 stockflow
 
-- 规模：中型（7 个功能模块 / 7 个页面 / 73 条测试 / 12 条 TRAP）
-- 核心规则：按 `(发生时间, 单据号, 行号)` 全序重放；出库超过在手整行隔离且不压负库存；调拨必须双边同料异仓等量；入库建 FIFO 层、出库吃最早层、退货带原单回原层、无原单建新层；成本 = 消耗层金额之和（Decimal）。
+- 规模：中型（7 个功能模块 / 7 个页面 / 87 条测试 / 13 条 TRAP）
+- 核心规则：按 `(发生时间, 单据号, 行号)` 全序重放；出库超过在手整行隔离且不压负库存；调拨必须双边同料异仓等量；入库建 FIFO 层、出库吃最早层；退货原单晚到按策略分 `provisional`（临时层先入在库、原单补到回原层）与 `wait_original`（隔离等原单）；成本 = 消耗层金额之和（Decimal）。
 - 使用者与工作流：区域仓 3 个仓、900 个物料的库存核算员，每月把三套系统导出的出入库流水、期初余额与实盘表放进来，一次运行得到采纳/隔离/层/成本/盘点差异与可导出的证据行。
 
 ## 功能模块
@@ -12,7 +12,7 @@
 | M2 单据规则 | 查列定义、方向、单价义务与单位换算 | GET /api/contract | `app/modules/m2_doc_rules/contract.py` `app/modules/m2_doc_rules/coerce.py` | `tests/test_m2_doc_rules.py` |
 | M3 质量隔离 | 按原因码看隔离行并导出证据 CSV | GET /api/quarantine、GET /api/quarantine.csv | `app/modules/m3_quality/rules.py` `app/modules/m3_quality/quarantine.py` | `tests/test_m3_quality.py` |
 | M4 时序重放 | 重放流水，看超库存拒绝、调拨配对与回原层 | POST /api/replay | `app/modules/m4_replay/replay.py` `app/modules/m4_replay/fifo.py` | `tests/test_m4_replay.py` |
-| M5 FIFO 成本 | 看层、按单据出库成本与金额恒等式 | GET /api/cost、页面 /cost | `app/modules/m5_cost/cogs.py` `app/modules/m5_cost/layers.py` | `tests/test_m5_cost.py` |
+| M5 FIFO 成本 | 看层、按单据出库成本、退货复核台账与金额恒等式 | GET /api/cost、GET /api/cost/returns、页面 /cost | `app/modules/m5_cost/cogs.py` `app/modules/m5_cost/returns.py` `app/modules/m5_cost/layers.py` | `tests/test_m5_cost.py`、`tests/test_returns_late.py` |
 | M6 盘点对账 | 看六本账、提交实盘、按版本闸门拒旧版本 | GET /api/reconcile、POST /api/reconcile/counts | `app/modules/m6_reconcile/counts.py` `app/modules/m6_reconcile/balance.py` | `tests/test_m6_reconcile.py` |
 | M7 导出 | 导出流水证据行、层、成本与运行清单 | GET /api/export/movements.csv、页面 /export | `app/modules/m7_export/csv_out.py` `app/modules/m7_export/manifest_out.py` | `tests/test_m7_export.py` |
 
@@ -34,6 +34,8 @@
 | TRAP-19 | 一行同时命中列数、单位、数量三类问题 | 取哪条原因码取决于检查顺序 | 原因码优先级表固定，取最高一条 | `app/reasons.py`、`app/modules/m3_quality/rules.py` | `tests/test_m3_quality.py::test_priority_order_is_stable` |
 | TRAP-21 | 调拨只有一条边，或两边数量不等 | 单边也建层，凭空多出库存 | 按单据号配对：缺边、异料、同仓、数量不等整组隔离 | `app/modules/m4_replay/replay.py` | `tests/test_m4_replay.py::test_transfer_missing_leg_quarantined` |
 | TRAP-26 | 旧版本盘点提交覆盖新盘点 | 后提交无条件覆盖 | 版本闸门：旧版本 409，同版本不同内容 409，同版本同内容幂等 | `app/modules/m6_reconcile/counts.py`、`app/modules/m6_reconcile/service.py` | `tests/test_m6_reconcile.py::test_stale_revision_rejected` |
+| TRAP-27 | 退货记录先到、销售原单晚到，当天查不到原单只能隔离，售后仓无法及时重新上架 | 一律隔离导致当天少库存；或一律按新单价建层，原单补到后重复加库存、成本层漂移 | 策略化：`provisional` 建带标记临时层当天入在库，`wait_original` 隔离等原单；原单补到整批重放，临时层消失回原层，在库数量不变、成本按原批次单价重算；策略进 run_id，先删后插幂等 | `app/modules/m4_replay/replay.py`、`app/modules/m4_replay/fifo.py`、`app/modules/m5_cost/returns.py` | `tests/test_returns_late.py`、`tests/test_e2e.py::test_provisional_then_original_arrives_no_double_stock` |
+| TRAP-28 | 重跑落库中途失败，旧批次已删、新批次没写完 | 留下半成品批次，页面与导出口径不一致 | 五张表同一事务先删后插，失败整体回滚保留上一完整版本；迁移用 ALTER 兜底不丢老库 | `app/store.py` | `tests/test_failure_safety.py` |
 
 ## 对账规则
 
@@ -42,9 +44,10 @@
 - 分层账：Σ 层剩余数量 = 期末数量；Σ 层金额 = 期末金额。
 - 守恒账：Σ 建层数量 − 消耗 + 恢复 = Σ 层剩余；金额同理（逐层算术恒等）。
 - 成本账：出库成本 = 消耗金额 − 退货恢复金额。
+- 退货临时层账：临时层金额 = 批次表临时入账金额，附注临时层数、数量与待原单隔离行数。
 - 调拨账：调拨出数量 = 调拨入数量（成对才应用）。
 - 盘点账：实盘 = 系统数量 + 差异；重放期末 + 盘点调整 = 盘点后在手。
-- 八本账在 `/api/reconcile`、页面 `/reconcile`、运行清单的 `checks` 中同源展示。
+- 十一本账在 `/api/reconcile`、页面 `/reconcile`、运行清单的 `checks` 中同源展示。
 
 ## 已知不覆盖
 

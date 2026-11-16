@@ -104,7 +104,7 @@ def test_quarantine_csv_has_evidence(client, demo):
     assert response.status_code == 200
     assert "text/csv" in response.headers["content-type"]
     lines = response.text.strip().splitlines()
-    assert len(lines) == 19
+    assert len(lines) == 18
     header = lines[0].split(",")
     assert "原因码" in header and "原数量" in header and "文件行号" in header
     assert any("TRUNCATED_TAIL" in line for line in lines)
@@ -112,7 +112,7 @@ def test_quarantine_csv_has_evidence(client, demo):
 
 def test_quarantine_distribution_counts(client, demo):
     payload = client.get("/api/quarantine").json()
-    assert payload["count"] == 18
+    assert payload["count"] == 17
     distribution = {item["code"]: item["count"] for item in payload["distribution"]}
     assert distribution["OUT_EXCEEDS_STOCK"] == 2
     assert distribution["DUP_DOC_CONFLICT"] == 2
@@ -120,6 +120,8 @@ def test_quarantine_distribution_counts(client, demo):
     assert distribution["SKU_UNKNOWN"] == 2
     assert distribution["TRUNCATED_TAIL"] == 1
     assert distribution["PRICE_REQUIRED"] == 1
+    # 原单晚到的退货在 provisional 策略下不再进隔离区
+    assert "RETURN_DOC_NOT_FOUND" not in distribution
 
 
 def test_reason_filters(settings, client, demo):

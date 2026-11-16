@@ -69,7 +69,8 @@
     "origin": "退货入库",
     "unit_cost": "9.5000",
     "qty_in": "10.0000",
-    "qty_remaining": "10.0000"
+    "qty_remaining": "10.0000",
+    "provisional": true
   },
   "L000010": {
     "sku": "000789",
@@ -102,5 +103,14 @@
     "unit_cost": "10.0000",
     "qty_in": "10.0000",
     "qty_remaining": "10.0000"
+  },
+  "L000014": {
+    "sku": "000123",
+    "warehouse": "WH-A",
+    "origin": "退货入库",
+    "unit_cost": "10.0000",
+    "qty_in": "10.0000",
+    "qty_remaining": "10.0000",
+    "provisional": true
   }
 }

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ...errors import DomainError
-from ..m5_cost import cogs
+from ..m5_cost import cogs, returns as returns_mod
 from ..m6_reconcile import balance
 from . import csv_out, manifest_out
 
@@ -24,6 +24,10 @@ def build(store, run, settings, kind: str) -> tuple[str, str, str]:
     if kind == "cost.csv":
         return (f"cost-{run_id}.csv",
                 csv_out.cost_csv(cogs.by_doc(segments)), "text/csv; charset=utf-8")
+    if kind == "returns.csv":
+        ledger = returns_mod.build_ledger(movements, layers, segments)
+        return (f"returns-{run_id}.csv",
+                csv_out.returns_csv(ledger), "text/csv; charset=utf-8")
     if kind == "manifest.json":
         report = balance.reconcile(run, movements, layers, segments,
                                    store.counts(run_id))
@@ -38,13 +42,17 @@ def summary(store, run) -> dict:
         return {"run_id": None, "files": [], "counts": {}, "totals": {}}
     run_id = run["run_id"]
     segments = store.consumptions(run_id)
+    movements = store.movements(run_id)
+    layers = store.layers(run_id)
+    return_rows = [row for row in movements if row.get("doc_type") == "退货入库"]
     return {
         "run_id": run_id,
         "files": [
             {"kind": "movements.csv", "label": "流水证据行", "rows": run["raw_rows"]},
             {"kind": "layers.csv", "label": "FIFO 层",
-             "rows": len(store.layers(run_id))},
+             "rows": len(layers)},
             {"kind": "cost.csv", "label": "单据成本", "rows": len(cogs.by_doc(segments))},
+            {"kind": "returns.csv", "label": "退货台账", "rows": len(return_rows)},
             {"kind": "manifest.json", "label": "运行清单", "rows": 1},
         ],
         "counts": {
